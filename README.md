@@ -26,6 +26,14 @@ Then open **http://localhost:4173** in **Google Chrome** (or Edge).
   power phrases, and recommended structures
 - **Illustrated scenes** for Tasks 3/4 and **unusual-object images** for Task 8
 - **Full Mock Test** mode (all 8 tasks in sequence) and **single-task practice**
+- **Test Centre Noise** ("Distraction Mode"): a Quiet / Busy Lab / Full Chaos toggle that plays
+  call-centre-style ambience during prep and recording — a synthesized crowd of voices (each with
+  pitch, melody, and vowel movement, but no real words that could contaminate your transcript)
+  in a reverberant room, plus keyboards, coughs, and chairs. Click a level on the task screen for
+  a 5-second preview; switch levels live mid-recording; reports get a 🎧 badge when you trained
+  under noise. Wear headphones so the noise doesn't reach your microphone.
+  *Prefer a real recording?* Drop any royalty-free ambience MP3 into `assets/` named
+  `test-centre-noise.mp3` and the app loops that instead (see `assets/README.txt`).
 - **Exam-faithful flow**: when the timer ends (or you stop), AI feedback starts automatically
   and the report appears — the report *and your recording* are saved (browser storage, last 20
   recordings kept), so you can replay any attempt later from **My Progress → View report**

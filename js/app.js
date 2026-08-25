@@ -40,6 +40,53 @@
     return h.length ? h.reduce((m, e) => Math.max(m, e.result.levelNum), 0) : null;
   };
 
+  /* ---------- test centre noise (setting + control UI) ---------- */
+  const NOISE_KEY = 'celpipTrainer.noiseLevel.v1';
+  const NOISE_LABELS = { quiet: 'Quiet', medium: 'Busy Lab', high: 'Full Chaos' };
+  const NOISE_ICONS = { quiet: '🔇', medium: '🔉', high: '🔊' };
+  const noiseLevel = () => { const v = localStorage.getItem(NOISE_KEY); return NOISE_LABELS[v] ? v : 'quiet'; };
+  const setNoiseLevel = (v) => localStorage.setItem(NOISE_KEY, v);
+  const ambience = () => window.CelpipAmbience;
+
+  function noiseControl(compact) {
+    const cur = noiseLevel();
+    return `<div class="noise-panel${compact ? ' compact' : ''}">
+      <div class="noise-head">🎧 Test Centre Noise</div>
+      ${compact ? '' : `<p class="noise-why">In the real exam, every candidate around you speaks at the same time. Practise with the noise on so it can't shake you on test day — click a level to hear a five-second preview; during the task it starts with your prep timer. <b>Wear headphones:</b> without them, your microphone records the noise too, which can garble your transcript and unfairly lower your score.</p>`}
+      <div class="set-pills" style="margin:0" role="group" aria-label="Test centre noise level">
+        ${Object.keys(NOISE_LABELS).map(k =>
+      `<button class="set-pill noise-pill ${k === cur ? 'active' : ''}" aria-pressed="${k === cur}" data-noise="${k}">${NOISE_ICONS[k]} ${NOISE_LABELS[k]}</button>`).join('')}
+      </div>
+      ${compact ? `<span class="noise-hint" id="noise-hint" style="display:${cur === 'quiet' ? 'none' : ''}">🎧 Headphones keep the noise out of your mic</span>` : ''}
+    </div>`;
+  }
+  let noisePreviewTimer = null;
+  let noisePreviewActive = false; // lets intro re-renders (question switching) keep a preview alive
+  function bindNoiseControl(live) {
+    $$('[data-noise]').forEach(b => b.onclick = () => {
+      setNoiseLevel(b.dataset.noise);
+      $$('[data-noise]').forEach(x => {
+        x.classList.toggle('active', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      const hint = $('#noise-hint');
+      if (hint) hint.style.display = b.dataset.noise === 'quiet' ? 'none' : '';
+      if (!ambience()) return;
+      if (live) { ambience().setLevel(b.dataset.noise); return; }
+      // intro screen: play a 5-second preview of the chosen level
+      clearTimeout(noisePreviewTimer);
+      ambience().setLevel(b.dataset.noise);
+      noisePreviewActive = b.dataset.noise !== 'quiet';
+      if (noisePreviewActive) {
+        noisePreviewTimer = setTimeout(() => {
+          noisePreviewActive = false;
+          const inTimedStage = session && (session.stage === 'prep' || session.stage === 'recording');
+          if (!inTimedStage) ambience().stop(); // never cut noise that a started task now owns
+        }, 5000);
+      }
+    });
+  }
+
   /* ---------- recording storage (IndexedDB — reports keep their playback) ---------- */
   function openDB() {
     return new Promise((resolve, reject) => {
@@ -254,7 +301,18 @@
   }));
   $('.brand').addEventListener('click', renderDashboard);
 
-  function leaveMediaViews() { clearTimers(); media.recogActive = false; if (media.recog) { try { media.recog.stop(); } catch { } } speechSynthesis && speechSynthesis.cancel(); }
+  function leaveMediaViews() {
+    clearTimers();
+    media.recogActive = false;
+    if (media.recog) { try { media.recog.stop(); } catch { } }
+    if (media.recorder && media.recorder.state !== 'inactive') { try { media.recorder.stop(); } catch { } }
+    media.recorder = null;
+    if (media.meterTimer) { clearInterval(media.meterTimer); media.meterTimer = null; }
+    speechSynthesis && speechSynthesis.cancel();
+    clearTimeout(noisePreviewTimer);
+    noisePreviewActive = false;
+    if (ambience()) ambience().stop();
+  }
   function nextMockSet() { return loadHistory().filter(e => e.mode === 'mock' && e.taskNumber === 1).length % 5; }
 
   /* ================= DASHBOARD ================= */
@@ -327,7 +385,7 @@
     const cls = e.result.levelNum >= 10 ? 'lb-gold' : e.result.levelNum >= 8 ? 'lb-silver' : e.result.levelNum >= 6 ? 'lb-bronze' : 'lb-none';
     return `<tr>
       <td>${new Date(e.ts).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })} ${new Date(e.ts).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}</td>
-      <td>Task ${e.taskNumber} · ${esc(t ? t.title : '')}</td>
+      <td>Task ${e.taskNumber} · ${esc(t ? t.title : '')}${e.noiseLevel && e.noiseLevel !== 'quiet' ? ` <span title="Test-centre noise: ${NOISE_LABELS[e.noiseLevel]}">🎧</span>` : ''}</td>
       <td class="muted">${esc((e.promptText || '').slice(0, 60))}${(e.promptText || '').length > 60 ? '…' : ''}</td>
       <td><span class="level-badge ${cls}">${lvl}</span></td>
       <td>${e.result.metrics.pace.value} wpm</td>
@@ -340,7 +398,7 @@
       if (!e) return;
       const task = taskByNumber(e.taskNumber);
       const prompt = task.prompts.find(p => p.id === e.promptId) || task.prompts[0];
-      const ctx = { result: e.result, task, prompt, transcript: e.transcript, blobUrl: null, fromHistory: true };
+      const ctx = { result: e.result, task, prompt, transcript: e.transcript, blobUrl: null, fromHistory: true, noiseLevel: e.noiseLevel };
       renderFeedback(ctx);
       loadRecording(e.id).then(rec => {
         if (!rec || fb !== ctx) return; // user navigated away meanwhile
@@ -454,6 +512,14 @@
       leaveMediaViews(); session.pos = +li.dataset.jump; session.stage = 'intro'; renderPractice();
     });
 
+    // noise plays only while the clock is running: prep + recording
+    // (exception: an intro re-render — e.g. switching question pills — must not cut a running preview)
+    if (ambience()) {
+      const timed = session.stage === 'prep' || session.stage === 'recording';
+      if (timed) ambience().setLevel(noiseLevel());
+      else if (!(session.stage === 'intro' && noisePreviewActive)) ambience().setLevel('quiet');
+    }
+
     const stage = { intro: renderIntro, prep: renderPrep, recording: renderRecording, analyzing: renderAnalyzing, nospeech: renderNoSpeech }[session.stage];
     stage($('#stage-card'), task, prompt, stepLabel);
   }
@@ -484,6 +550,7 @@
         <span class="time-chip">🎙️ Speaking: <span>${task.speakSeconds}s</span></span>
         <button class="link-more" id="btn-hear">🔊 Hear the question</button>
       </div>
+      ${noiseControl(false)}
       <div class="stage-actions">
         <button class="btn btn-green" id="btn-start">Start preparation (${task.prepSeconds}s)</button>
         <button class="btn btn-grey" id="btn-skip-prep">Skip prep — record now</button>
@@ -498,9 +565,12 @@
         </div>
       </div>`;
     $('#btn-hear').onclick = () => speak(prompt.prompt);
+    bindNoiseControl(false);
     $('#btn-tips').onclick = () => { const a = $('#tips-area'); a.style.display = a.style.display === 'none' ? 'block' : 'none'; };
-    $('#btn-start').onclick = async () => { await ensureStream(); session.stage = 'prep'; renderPractice(); };
-    $('#btn-skip-prep').onclick = async () => { await ensureStream(); session.stage = 'recording'; renderPractice(); };
+    // guard: if the user navigates away while the mic-permission prompt is pending,
+    // the button is no longer in the DOM — don't resurrect the practice view
+    $('#btn-start').onclick = async (e) => { const b = e.currentTarget; await ensureStream(); if (!document.contains(b)) return; session.stage = 'prep'; renderPractice(); };
+    $('#btn-skip-prep').onclick = async (e) => { const b = e.currentTarget; await ensureStream(); if (!document.contains(b)) return; session.stage = 'recording'; renderPractice(); };
     $$('[data-set]').forEach(b => b.onclick = () => { session.setIdx = +b.dataset.set; renderPractice(); });
   }
 
@@ -518,7 +588,9 @@
       </div>
       <div class="stage-actions" style="justify-content:center">
         <button class="btn btn-green" id="btn-record-now">🎙️ I'm ready — start speaking</button>
-      </div>`;
+      </div>
+      ${noiseControl(true)}`;
+    bindNoiseControl(true);
     const cancel = countdown(task.prepSeconds, (r) => {
       const n = $('#prep-num'); if (n) n.textContent = r;
       setRing('prep-ring', r, task.prepSeconds);
@@ -553,9 +625,11 @@
           <div class="stage-actions" style="justify-content:center">
             <button class="btn btn-red" id="btn-stop">⏹ Stop recording</button>
           </div>
+          ${noiseControl(true)}
         </div>
       </div>`;
     $('#rec-ring').classList.add('rec');
+    bindNoiseControl(true);
 
     if (media.stream && media.blobIsVideo) $('#preview').srcObject = media.stream;
 
@@ -611,11 +685,13 @@
     const entry = {
       id: 'a' + Date.now(), ts: Date.now(), mode: session.mode, taskNumber: task.taskNumber,
       promptId: prompt.id, promptText: prompt.prompt, setIdx: session.setIdx, transcript, result,
+      noiseLevel: noiseLevel(),
     };
     saveAttempt(entry);
     if (media.lastBlob) saveRecording(entry.id, media.lastBlob, media.blobIsVideo);
     session.done[task.taskNumber] = { result };
-    renderFeedback({ result, task, prompt, transcript, blobUrl: media.blobUrl, blobIsVideo: media.blobIsVideo, inSession: true });
+    session.stage = 'intro'; // so "Back to practice" lands on the task screen, not a re-run of the analysis
+    renderFeedback({ result, task, prompt, transcript, blobUrl: media.blobUrl, blobIsVideo: media.blobIsVideo, inSession: true, noiseLevel: entry.noiseLevel });
   }
 
   /* ----- stage: no speech detected ----- */
@@ -655,8 +731,9 @@
       num >= 8 ? ['SILVER', 'linear-gradient(135deg,#9fb0c3,#67788e)', '#eef1f6;color:#4c5a6e'] :
         num >= 6 ? ['BRONZE', 'linear-gradient(135deg,#d29a71,#a05f33)', '#f7e8dd;color:#7c4a24'] :
           ['KEEP GOING', 'linear-gradient(135deg,#8b93b8,#5d6488)', '#e9ebf5;color:#4a5273'];
+    const noisy = ctx.noiseLevel && ctx.noiseLevel !== 'quiet';
     const blurb = num >= 10
-      ? `According to our AI, you hit your target — this answer performs at <b>CELPIP Level ${lvl}</b>. Review the breakdown to keep it consistent across every task.`
+      ? `According to our AI, you hit your target — this answer performs at <b>CELPIP Level ${lvl}</b>.${noisy ? ` And you did it with <b>${NOISE_LABELS[ctx.noiseLevel]}</b> noise in your ears — the real test centre will feel familiar.` : ' Review the breakdown to keep it consistent across every task.'}`
       : num >= 8 ? `Solid answer at an estimated <b>Level ${lvl}</b> — you're close to your 10+ target. The Action Plan shows exactly which two or three metrics to fix first.`
         : `This answer lands around <b>Level ${lvl}</b>. Don't worry — the Action Plan pinpoints what's holding the score down, and the Model Answer tab shows what 10+ sounds like.`;
 
@@ -666,7 +743,7 @@
         <div class="fb-head-left">
           <a href="#" class="fb-back" id="fb-back">← ${ctx.inSession ? 'Back to practice' : 'Go back'}</a>
           <h1>${esc(prompt.prompt.length > 140 ? prompt.prompt.slice(0, 140) + '…' : prompt.prompt)}</h1>
-          <div class="fb-sub">Task ${task.taskNumber}: ${esc(task.title)} ${ctx.isDemo ? '· <span class="pill pill-violet">SAMPLE REPORT</span>' : ''}</div>
+          <div class="fb-sub">Task ${task.taskNumber}: ${esc(task.title)} ${ctx.isDemo ? '· <span class="pill pill-violet">SAMPLE REPORT</span>' : ''} ${noisy ? `· <span class="pill pill-violet">🎧 ${NOISE_LABELS[ctx.noiseLevel]} noise</span>` : ''}</div>
           <div class="fb-badge-row">
             <div class="medal">
               <div class="medal-circle" style="background:${medal[1]}">${lvl}</div>
